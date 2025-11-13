@@ -15,7 +15,6 @@ def create_connection():
             raise ValueError("DATABASE_URL environment variable is not set.")
 
         conn = psycopg2.connect(DATABASE_URL)
-        # --- FIX: Removed conn.autocommit = True ---
         
         # Ensure tables exist every time a connection is made.
         create_tables(conn)
@@ -88,33 +87,43 @@ def create_tables(conn):
                 FOREIGN KEY (category_id) REFERENCES categories (category_id) ON DELETE SET NULL
             );
             """)
-        # --- FIX: Add commit after creating tables ---
         conn.commit()
     except Exception as e:
         print(f"Error creating tables: {e}")
 
 def get_or_create_user(conn, user_id):
     """
-    Get the user. If they don't exist, create them along with
-    default settings and categories.
+    Get the user. If they don't exist, create them.
+    **Also ensures their default settings and categories exist.**
     """
     try:
         with conn.cursor() as c:
+            # --- Step 1: Check for user ---
             c.execute("SELECT * FROM users WHERE user_id = %s", (user_id,))
             user = c.fetchone()
             
             if user is None:
-                # User doesn't exist, create them
+                print(f"Creating new user: {user_id}")
                 c.execute("INSERT INTO users (user_id) VALUES (%s)", (user_id,))
-                
-                # Also create their default settings
+            
+            # --- Step 2: Check for user_settings (FIX FOR 404 ERROR) ---
+            c.execute("SELECT * FROM user_settings WHERE user_id = %s", (user_id,))
+            settings = c.fetchone()
+            
+            if settings is None:
+                print(f"Creating default settings for user: {user_id}")
                 today = datetime.date.today().isoformat()
                 c.execute("""
                 INSERT INTO user_settings (user_id, start_balance, start_date)
                 VALUES (%s, 0.0, %s)
                 """, (user_id, today))
-                
-                # Create default categories
+            
+            # --- Step 3: Check for categories ---
+            c.execute("SELECT * FROM categories WHERE user_id = %s", (user_id,))
+            categories = c.fetchone()
+            
+            if categories is None:
+                print(f"Creating default categories for user: {user_id}")
                 default_categories = [
                     (user_id, 'Paycheck', 'credit'),
                     (user_id, 'Rent', 'debit'),
@@ -125,11 +134,8 @@ def get_or_create_user(conn, user_id):
                 c.executemany("""
                 INSERT INTO categories (user_id, name, type) VALUES (%s, %s, %s)
                 """, default_categories)
-                
-                # --- FIX: Add commit after creating user ---
-                conn.commit()
-                print(f"Created new user: {user_id}")
             
+            conn.commit()
             return user_id
     except Exception as e:
         conn.rollback()
@@ -146,18 +152,18 @@ def get_categories(conn, user_id):
 def add_category(conn, user_id, name, type):
     with conn.cursor() as c:
         c.execute("INSERT INTO categories (user_id, name, type) VALUES (%s, %s, %s) RETURNING category_id", (user_id, name, type))
-        conn.commit() # --- FIX: Add commit ---
+        conn.commit()
         return c.fetchone()[0]
 
 def update_category(conn, user_id, category_id, name, type):
     with conn.cursor() as c:
         c.execute("UPDATE categories SET name = %s, type = %s WHERE category_id = %s AND user_id = %s", (name, type, category_id, user_id))
-        conn.commit() # --- FIX: Add commit ---
+        conn.commit()
 
 def delete_category(conn, user_id, category_id):
     with conn.cursor() as c:
         c.execute("DELETE FROM categories WHERE category_id = %s AND user_id = %s", (category_id, user_id))
-        conn.commit() # --- FIX: Add commit ---
+        conn.commit()
 
 # --- TRANSACTION CRUD ---
 
@@ -172,7 +178,7 @@ def add_transaction(conn, user_id, date, category_id, description, amount, is_co
         INSERT INTO transactions (user_id, date, category_id, description, amount, is_confirmed, schedule_id)
         VALUES (%s, %s, %s, %s, %s, %s, %s)
         """, (user_id, date, category_id, description, amount, is_confirmed, schedule_id))
-        conn.commit() # --- FIX: Add commit ---
+        conn.commit()
 
 def update_transaction(conn, user_id, transaction_id, date, category_id, description, amount, is_confirmed):
     with conn.cursor() as c:
@@ -181,12 +187,12 @@ def update_transaction(conn, user_id, transaction_id, date, category_id, descrip
         SET date = %s, category_id = %s, description = %s, amount = %s, is_confirmed = %s
         WHERE transaction_id = %s AND user_id = %s
         """, (date, category_id, description, amount, is_confirmed, transaction_id, user_id))
-        conn.commit() # --- FIX: Add commit ---
+        conn.commit()
 
 def delete_transaction(conn, user_id, transaction_id):
     with conn.cursor() as c:
         c.execute("DELETE FROM transactions WHERE transaction_id = %s AND user_id = %s", (transaction_id, user_id))
-        conn.commit() # --- FIX: Add commit ---
+        conn.commit()
     
 def get_transactions_for_day(conn, user_id, date):
     with conn.cursor(cursor_factory=DictCursor) as c:
@@ -217,7 +223,7 @@ def add_scheduled_transaction(conn, user_id, category_id, description, amount, f
         INSERT INTO scheduled_transactions (user_id, category_id, description, amount, frequency, start_date, end_date)
         VALUES (%s, %s, %s, %s, %s, %s, %s)
         """, (user_id, category_id, description, amount, frequency, start_date, end_date))
-        conn.commit() # --- FIX: Add commit ---
+        conn.commit()
     
 def get_scheduled_transactions(conn, user_id):
     with conn.cursor(cursor_factory=DictCursor) as c:
@@ -238,7 +244,7 @@ def delete_scheduled_transaction(conn, user_id, schedule_id, delete_future=False
             DELETE FROM transactions
             WHERE schedule_id = %s AND user_id = %s AND is_confirmed = 0
             """, (schedule_id, user_id))
-        conn.commit() # --- FIX: Add commit ---
+        conn.commit()
     
 def get_last_generated_date(conn, user_id, schedule_id):
     with conn.cursor() as c:
@@ -256,7 +262,10 @@ def get_settings(conn, user_id):
         c.execute("SELECT start_balance, start_date FROM user_settings WHERE user_id = %s", (user_id,))
         result = c.fetchone()
         if result:
-            return {"start_balance": result[0], "start_date": result[1].isoformat()}
+            # --- FIX FOR 500 ERROR ---
+            # Force the result to a YYYY-MM-DD string
+            date_str = result['start_date'].strftime('%Y-%m-%d')
+            return {"start_balance": result['start_balance'], "start_date": date_str}
         return None
 
 def update_settings(conn, user_id, start_balance, start_date):
@@ -266,4 +275,4 @@ def update_settings(conn, user_id, start_balance, start_date):
         SET start_balance = %s, start_date = %s
         WHERE user_id = %s
         """, (start_balance, start_date, user_id))
-        conn.commit() # --- FIX: Add commit ---
+        conn.commit()
