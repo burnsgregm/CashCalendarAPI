@@ -1,4 +1,6 @@
 
+## /content/CashCalendarAPI/database.py
+
 import os
 import psycopg2
 from psycopg2.extras import DictCursor
@@ -91,56 +93,63 @@ def create_tables(conn):
     except Exception as e:
         print(f"Error creating tables: {e}")
 
+# ---
+# --- MODIFIED/CORRECTED FUNCTION ---
+# ---
 def get_or_create_user(conn, user_id):
     """
-    Get the user. If they don't exist, create them.
-    **Also ensures their default settings and categories exist.**
+    Get the user. If they don't exist, atomically create them,
+    their default settings, and their default categories.
     """
     try:
         with conn.cursor() as c:
-            # --- Step 1: Check for user ---
+            # --- Step 1: Check if user exists ---
             c.execute("SELECT * FROM users WHERE user_id = %s", (user_id,))
             user = c.fetchone()
 
-            if user is None:
-                print(f"Creating new user: {user_id}")
-                c.execute("INSERT INTO users (user_id) VALUES (%s)", (user_id,))
+            if user:
+                # User already exists, nothing to do.
+                return user_id
 
-            # --- Step 2: Check for user_settings (FIX FOR 404 ERROR) ---
-            c.execute("SELECT * FROM user_settings WHERE user_id = %s", (user_id,))
-            settings = c.fetchone()
+            # --- Step 2: User is new. Create user, settings, and categories in ONE transaction ---
+            print(f"Creating new user: {user_id}")
+            
+            # Insert User
+            c.execute("INSERT INTO users (user_id) VALUES (%s)", (user_id,))
 
-            if settings is None:
-                print(f"Creating default settings for user: {user_id}")
-                today = datetime.date.today().isoformat()
-                c.execute("""
-                INSERT INTO user_settings (user_id, start_balance, start_date)
-                VALUES (%s, 0.0, %s)
-                """, (user_id, today))
+            # Insert Default Settings
+            print(f"Creating default settings for user: {user_id}")
+            today = datetime.date.today().isoformat()
+            c.execute("""
+            INSERT INTO user_settings (user_id, start_balance, start_date)
+            VALUES (%s, 0.0, %s)
+            """, (user_id, today))
 
-            # --- Step 3: Check for categories ---
-            c.execute("SELECT * FROM categories WHERE user_id = %s", (user_id,))
-            categories = c.fetchone()
+            # Insert Default Categories
+            print(f"Creating default categories for user: {user_id}")
+            default_categories = [
+                (user_id, 'Paycheck', 'credit'),
+                (user_id, 'Rent', 'debit'),
+                (user_id, 'Groceries', 'debit'),
+                (user_id, 'Utilities', 'debit'),
+                (user_id, 'Other', 'debit')
+            ]
+            c.executemany("""
+            INSERT INTO categories (user_id, name, type) VALUES (%s, %s, %s)
+            """, default_categories)
 
-            if categories is None:
-                print(f"Creating default categories for user: {user_id}")
-                default_categories = [
-                    (user_id, 'Paycheck', 'credit'),
-                    (user_id, 'Rent', 'debit'),
-                    (user_id, 'Groceries', 'debit'),
-                    (user_id, 'Utilities', 'debit'),
-                    (user_id, 'Other', 'debit')
-                ]
-                c.executemany("""
-                INSERT INTO categories (user_id, name, type) VALUES (%s, %s, %s)
-                """, default_categories)
-
+            # --- Step 3: Commit the entire transaction ---
             conn.commit()
+            print(f"Successfully created and committed new user {user_id}")
             return user_id
+            
     except Exception as e:
         conn.rollback()
-        print(f"Error in get_or_create_user: {e}")
+        print(f"CRITICAL Error in get_or_create_user: {e}. Transaction rolled back.")
         return None
+# ---
+# --- END MODIFIED FUNCTION ---
+# ---
 
 # --- CATEGORY CRUD ---
 
