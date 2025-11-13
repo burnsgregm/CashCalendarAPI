@@ -186,7 +186,7 @@ def get_calendar_data():
     except Exception as e:
         return jsonify({"error": f"Error in get_calendar_data: {str(e)}"}), 500
 
-# --- TRANSACTION ENDPOINTS ---
+# --- TRANSACTION ENDPOINTS  ---
 
 @app.route('/api/transaction/<int:transaction_id>', methods=['GET'])
 def get_transaction(transaction_id):
