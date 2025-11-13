@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from dateutil.relativedelta import relativedelta
 from authlib.integrations.flask_client import OAuth
 import jwt
+import secrets # <-- ADD THIS IMPORT for the nonce
 
 # Import our custom modules
 import database
@@ -17,17 +18,13 @@ import engine
 app = Flask(__name__)
 
 # --- Load Config from Environment Variables ---
-# We use os.environ.get() to read the secrets
-# In production (Render), these are set in the Render dashboard.
-# For local testing, you would set these in your terminal.
 app.config['SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'default-super-secret-key-for-local-dev')
 app.config['GOOGLE_CLIENT_ID'] = os.environ.get('GOOGLE_CLIENT_ID')
 app.config['GOOGLE_CLIENT_SECRET'] = os.environ.get('GOOGLE_CLIENT_SECRET')
-# This is the URL of our *frontend* (Netlify or local HTML file)
 FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://127.0.0.1:5500')
 
-# Enable CORS to allow our frontend to make requests
-CORS(app, resources={r"/api/*": {"origins": [FRONTEND_URL]}})
+# Enable CORS
+CORS(app, resources={r"/api/*": {"origins": [FRONTEND_URL, "null"]}})
 
 # --- 2. AUTHENTICATION SETUP (GOOGLE OAUTH & JWT) ---
 oauth = OAuth(app)
@@ -68,7 +65,6 @@ def get_user_id_from_token():
         return None, (jsonify({"error": "Missing authorization token"}), 401)
         
     try:
-        # Header should be "Bearer <token>"
         token_type, token = auth_header.split(' ')
         if token_type.lower() != 'bearer':
             raise ValueError("Invalid token type")
@@ -88,21 +84,25 @@ def login():
     """
     Step 1. Redirects the user to Google's login page.
     """
-    # Get the redirect URI for our *own* /auth/callback endpoint
     redirect_uri = url_for('auth_callback', _external=True)
-    return google.authorize_redirect(redirect_uri)
+    # --- FIX: Create and save a nonce in the session ---
+    session['nonce'] = secrets.token_urlsafe(16)
+    return google.authorize_redirect(redirect_uri, nonce=session['nonce'])
 
 @app.route('/auth/callback')
 def auth_callback():
     """
     Step 2. Google redirects here after login.
-    We exchange Google's code for a user token, create our *own* JWT,
-    and redirect the user back to the frontend with the JWT.
     """
     try:
         # Get the user's info from Google
         token = google.authorize_access_token()
-        user_info = google.get('openid/userinfo').json()
+        
+        # --- FIX: Securely parse the id_token using the nonce ---
+        nonce = session.pop('nonce', None)
+        user_info = google.parse_id_token(token, nonce=nonce)
+        # --- END FIX ---
+        
         user_id = user_info['email'] # user_id is their email
 
         if not user_id:
@@ -117,7 +117,6 @@ def auth_callback():
         app_token = create_jwt_token(user_id)
 
         # Redirect the user back to the frontend, passing the token in the URL
-        # The frontend JS will grab this, save it, and be logged in.
         return redirect(f"{FRONTEND_URL}?token={app_token}")
 
     except Exception as e:
@@ -133,10 +132,10 @@ def get_me():
     return jsonify({"user_id": user_id})
 
 # --- 4. SECURE API ENDPOINTS ---
+# (All other endpoints remain the same as the previous version)
 
 @app.route('/api/settings', methods=['GET'])
 def get_settings():
-    """Get the current start_balance and start_date."""
     user_id, error = get_user_id_from_token()
     if error: return error
     
@@ -149,7 +148,6 @@ def get_settings():
 
 @app.route('/api/settings', methods=['POST'])
 def update_settings():
-    """Update the start_balance and start_date."""
     user_id, error = get_user_id_from_token()
     if error: return error
     
@@ -164,10 +162,6 @@ def update_settings():
 
 @app.route('/api/calendar_data', methods=['GET'])
 def get_calendar_data():
-    """
-    The main endpoint to get all data for the calendar view.
-    Runs projection and calculates all balances.
-    """
     user_id, error = get_user_id_from_token()
     if error: return error
     
@@ -179,26 +173,20 @@ def get_calendar_data():
         
     try:
         conn = get_db()
-        # 1. Run projection for this user
         projection_end_date = (datetime.strptime(end_date, "%Y-%m-%d") + relativedelta(years=2)).isoformat()
         engine.run_projection(conn, user_id, projection_end_date)
         
-        # 2. Get calculated calendar data for this user
         df = engine.get_calendar_data(conn, user_id, start_date, end_date)
         conn.close()
         
-        # 3. Convert to JSON
         df['date'] = df['date'].dt.strftime('%Y-%m-%d')
         return jsonify(df.to_dict('records'))
         
     except Exception as e:
         return jsonify({"error": f"Error in get_calendar_data: {str(e)}"}), 500
 
-# --- TRANSACTION ENDPOINTS ---
-
 @app.route('/api/transaction/<int:transaction_id>', methods=['GET'])
 def get_transaction(transaction_id):
-    """Get a single transaction by its ID."""
     user_id, error = get_user_id_from_token()
     if error: return error
     
@@ -207,18 +195,20 @@ def get_transaction(transaction_id):
         c = conn.cursor()
         c.execute("SELECT * FROM transactions WHERE transaction_id = ? AND user_id = ?", (transaction_id, user_id))
         transaction = c.fetchone()
-        conn.close()
+        
         if transaction:
-            c_ser = database.create_connection().cursor() # Need a new cursor for description
-            c_ser.execute("SELECT * FROM transactions WHERE transaction_id = ?", (transaction_id,))
-            return jsonify(serialize_row(transaction, c_ser))
+            c.execute("SELECT * FROM transactions WHERE transaction_id = ?", (transaction_id,))
+            serialized_tx = serialize_row(transaction, c)
+            conn.close()
+            return jsonify(serialized_tx)
+        
+        conn.close()
         return jsonify({"error": "Transaction not found"}), 404
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/transactions/<date>', methods=['GET'])
 def get_transactions_for_day(date):
-    """Get all transactions for a specific day."""
     user_id, error = get_user_id_from_token()
     if error: return error
     
@@ -239,7 +229,6 @@ def get_transactions_for_day(date):
 
 @app.route('/api/transactions', methods=['POST'])
 def add_transaction():
-    """Add a new one-time transaction."""
     user_id, error = get_user_id_from_token()
     if error: return error
     
@@ -261,7 +250,6 @@ def add_transaction():
 
 @app.route('/api/transactions/<int:transaction_id>', methods=['PUT'])
 def update_transaction(transaction_id):
-    """Update an existing transaction."""
     user_id, error = get_user_id_from_token()
     if error: return error
     
@@ -283,7 +271,6 @@ def update_transaction(transaction_id):
 
 @app.route('/api/transactions/<int:transaction_id>', methods=['DELETE'])
 def delete_transaction(transaction_id):
-    """Delete a single transaction."""
     user_id, error = get_user_id_from_token()
     if error: return error
     
@@ -295,11 +282,8 @@ def delete_transaction(transaction_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# --- SCHEDULE ENDPOINTS ---
-
 @app.route('/api/schedules', methods=['GET'])
 def get_schedules():
-    """Get all scheduled transaction rules."""
     user_id, error = get_user_id_from_token()
     if error: return error
     
@@ -320,7 +304,6 @@ def get_schedules():
 
 @app.route('/api/schedules', methods=['POST'])
 def add_schedule():
-    """Add a new scheduled transaction rule."""
     user_id, error = get_user_id_from_token()
     if error: return error
     
@@ -343,7 +326,6 @@ def add_schedule():
 
 @app.route('/api/schedules/<int:schedule_id>', methods=['DELETE'])
 def delete_schedule(schedule_id):
-    """Delete a scheduled transaction rule."""
     user_id, error = get_user_id_from_token()
     if error: return error
     
@@ -356,11 +338,8 @@ def delete_schedule(schedule_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# --- CATEGORY ENDPOINTS ---
-
 @app.route('/api/categories', methods=['GET'])
 def get_categories():
-    """Get all categories."""
     user_id, error = get_user_id_from_token()
     if error: return error
     
@@ -376,7 +355,6 @@ def get_categories():
 
 @app.route('/api/categories', methods=['POST'])
 def add_category():
-    """Add a new category."""
     user_id, error = get_user_id_from_token()
     if error: return error
     
@@ -391,7 +369,6 @@ def add_category():
 
 @app.route('/api/categories/<int:category_id>', methods=['PUT'])
 def update_category(category_id):
-    """Update an existing category."""
     user_id, error = get_user_id_from_token()
     if error: return error
 
@@ -406,7 +383,6 @@ def update_category(category_id):
         
 @app.route('/api/categories/<int:category_id>', methods=['DELETE'])
 def delete_category(category_id):
-    """Delete a category."""
     user_id, error = get_user_id_from_token()
     if error: return error
     
@@ -420,11 +396,17 @@ def delete_category(category_id):
 
 # --- 5. RUN THE APP ---
 if __name__ == '__main__':
-    # This is used for local development
-    # In production, gunicorn runs the 'app' variable directly
+    try:
+        print("Initializing database...")
+        conn = database.initialize_database()
+        conn.close()
+        print("Initialization complete.")
+    except Exception as e:
+        print(f"Error during startup: {e}")
+
     print("\n" + "="*50)
     print("🚀 Flask server is starting for LOCAL DEVELOPMENT...")
-    print("It's using secrets from your local environment.")
-    print("Open your index.html file (or http://127.0.0.1:5500) to view the app.")
+    print(f"Your frontend should be running at: {FRONTEND_URL}")
+    print("This server is running at: http://127.0.0.1:5000")
     print("="*50 + "\n")
-    app.run(debug=True, port=5000)
+    app.run(debug=False, port=5000)
