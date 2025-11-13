@@ -5,3 +5,4 @@ PyJWT
 gunicorn
 pandas
 python-dateutil
+Jinja2
