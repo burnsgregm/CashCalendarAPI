@@ -7,26 +7,17 @@ import datetime
 # --- DATABASE_URL is NO LONGER read here ---
 
 def create_connection():
-    """
-    Create a database connection to the PostgreSQL database.
-    Also ensures tables are created.
-    """
+    """Create a database connection to the PostgreSQL database."""
     conn = None
     try:
-        # --- THIS IS THE FIX ---
-        # Read the DATABASE_URL from the environment *inside* the function,
-        # not at the top of the file.
         DATABASE_URL = os.environ.get('DATABASE_URL')
         if not DATABASE_URL:
             raise ValueError("DATABASE_URL environment variable is not set.")
-        # --- END FIX ---
 
         conn = psycopg2.connect(DATABASE_URL)
-        conn.autocommit = True
+        # --- FIX: Removed conn.autocommit = True ---
         
-        # --- LAZY INITIALIZATION ---
         # Ensure tables exist every time a connection is made.
-        # This is idempotent (safe to run multiple times).
         create_tables(conn)
         
     except Exception as e:
@@ -97,7 +88,8 @@ def create_tables(conn):
                 FOREIGN KEY (category_id) REFERENCES categories (category_id) ON DELETE SET NULL
             );
             """)
-        
+        # --- FIX: Add commit after creating tables ---
+        conn.commit()
     except Exception as e:
         print(f"Error creating tables: {e}")
 
@@ -134,10 +126,13 @@ def get_or_create_user(conn, user_id):
                 INSERT INTO categories (user_id, name, type) VALUES (%s, %s, %s)
                 """, default_categories)
                 
+                # --- FIX: Add commit after creating user ---
+                conn.commit()
                 print(f"Created new user: {user_id}")
             
             return user_id
     except Exception as e:
+        conn.rollback()
         print(f"Error in get_or_create_user: {e}")
         return None
 
@@ -151,15 +146,18 @@ def get_categories(conn, user_id):
 def add_category(conn, user_id, name, type):
     with conn.cursor() as c:
         c.execute("INSERT INTO categories (user_id, name, type) VALUES (%s, %s, %s) RETURNING category_id", (user_id, name, type))
+        conn.commit() # --- FIX: Add commit ---
         return c.fetchone()[0]
 
 def update_category(conn, user_id, category_id, name, type):
     with conn.cursor() as c:
         c.execute("UPDATE categories SET name = %s, type = %s WHERE category_id = %s AND user_id = %s", (name, type, category_id, user_id))
+        conn.commit() # --- FIX: Add commit ---
 
 def delete_category(conn, user_id, category_id):
     with conn.cursor() as c:
         c.execute("DELETE FROM categories WHERE category_id = %s AND user_id = %s", (category_id, user_id))
+        conn.commit() # --- FIX: Add commit ---
 
 # --- TRANSACTION CRUD ---
 
@@ -174,6 +172,7 @@ def add_transaction(conn, user_id, date, category_id, description, amount, is_co
         INSERT INTO transactions (user_id, date, category_id, description, amount, is_confirmed, schedule_id)
         VALUES (%s, %s, %s, %s, %s, %s, %s)
         """, (user_id, date, category_id, description, amount, is_confirmed, schedule_id))
+        conn.commit() # --- FIX: Add commit ---
 
 def update_transaction(conn, user_id, transaction_id, date, category_id, description, amount, is_confirmed):
     with conn.cursor() as c:
@@ -182,10 +181,12 @@ def update_transaction(conn, user_id, transaction_id, date, category_id, descrip
         SET date = %s, category_id = %s, description = %s, amount = %s, is_confirmed = %s
         WHERE transaction_id = %s AND user_id = %s
         """, (date, category_id, description, amount, is_confirmed, transaction_id, user_id))
+        conn.commit() # --- FIX: Add commit ---
 
 def delete_transaction(conn, user_id, transaction_id):
     with conn.cursor() as c:
         c.execute("DELETE FROM transactions WHERE transaction_id = %s AND user_id = %s", (transaction_id, user_id))
+        conn.commit() # --- FIX: Add commit ---
     
 def get_transactions_for_day(conn, user_id, date):
     with conn.cursor(cursor_factory=DictCursor) as c:
@@ -216,6 +217,7 @@ def add_scheduled_transaction(conn, user_id, category_id, description, amount, f
         INSERT INTO scheduled_transactions (user_id, category_id, description, amount, frequency, start_date, end_date)
         VALUES (%s, %s, %s, %s, %s, %s, %s)
         """, (user_id, category_id, description, amount, frequency, start_date, end_date))
+        conn.commit() # --- FIX: Add commit ---
     
 def get_scheduled_transactions(conn, user_id):
     with conn.cursor(cursor_factory=DictCursor) as c:
@@ -236,6 +238,7 @@ def delete_scheduled_transaction(conn, user_id, schedule_id, delete_future=False
             DELETE FROM transactions
             WHERE schedule_id = %s AND user_id = %s AND is_confirmed = 0
             """, (schedule_id, user_id))
+        conn.commit() # --- FIX: Add commit ---
     
 def get_last_generated_date(conn, user_id, schedule_id):
     with conn.cursor() as c:
@@ -263,3 +266,4 @@ def update_settings(conn, user_id, start_balance, start_date):
         SET start_balance = %s, start_date = %s
         WHERE user_id = %s
         """, (start_balance, start_date, user_id))
+        conn.commit() # --- FIX: Add commit ---
