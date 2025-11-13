@@ -38,6 +38,7 @@ google = oauth.register(
 def get_db():
     """Helper to get a fresh db connection."""
     # This now calls our "smart" connection function
+    # which also ensures tables are created.
     return database.create_connection() 
 
 def serialize_row(row):
