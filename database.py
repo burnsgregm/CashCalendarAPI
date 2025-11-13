@@ -4,8 +4,6 @@ import psycopg2
 from psycopg2.extras import DictCursor
 import datetime
 
-# --- DATABASE_URL is NO LONGER read here ---
-
 def create_connection():
     """Create a database connection to the PostgreSQL database."""
     conn = None
