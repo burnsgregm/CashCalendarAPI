@@ -6,7 +6,7 @@ This is the secure **Backend API** for the Cash Calendar application.
 It is a Python/Flask server that handles all data, logic, and security. It uses Google OAuth 2.0 to authenticate users and a multi-tenant SQLite database to keep each user's financial data private.
 
 This API is designed to be deployed to **Render**. The frontend is in a separate repository (`CashCalendarUI`) and is deployed to **Netlify**.
- 
+
 ## API Endpoints
 
 * `/api/login`: (Public) Starts the Google OAuth login flow.

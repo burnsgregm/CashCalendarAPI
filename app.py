@@ -1,6 +1,5 @@
 
 import os
-import sqlite3
 import pandas as pd
 from flask import Flask, jsonify, request, redirect, url_for, session
 from flask_cors import CORS
@@ -8,9 +7,7 @@ from datetime import datetime, timedelta, timezone
 from dateutil.relativedelta import relativedelta
 from authlib.integrations.flask_client import OAuth
 import jwt
-import secrets # <-- ADD THIS IMPORT for the nonce
-
-# Import our custom modules
+import secrets
 import database
 import engine
 
@@ -18,13 +15,13 @@ import engine
 app = Flask(__name__)
 
 # --- Load Config from Environment Variables ---
-app.config['SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'default-super-secret-key-for-local-dev')
+app.config['SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY')
 app.config['GOOGLE_CLIENT_ID'] = os.environ.get('GOOGLE_CLIENT_ID')
 app.config['GOOGLE_CLIENT_SECRET'] = os.environ.get('GOOGLE_CLIENT_SECRET')
-FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://127.0.0.1:5500')
+FRONTEND_URL = os.environ.get('FRONTEND_URL') # Set by Render
 
 # Enable CORS
-CORS(app, resources={r"/api/*": {"origins": [FRONTEND_URL, "null"]}})
+CORS(app, resources={r"/api/*": {"origins": [FRONTEND_URL]}})
 
 # --- 2. AUTHENTICATION SETUP (GOOGLE OAUTH & JWT) ---
 oauth = OAuth(app)
@@ -40,17 +37,16 @@ def get_db():
     """Helper to get a fresh db connection."""
     return database.initialize_database()
 
-def serialize_row(row, cursor):
-    """Converts a database row (tuple) into a JSON-friendly dict."""
-    columns = [col[0] for col in cursor.description]
-    return dict(zip(columns, row))
+def serialize_row(row):
+    """Converts a Psycopg DictRow into a plain dict."""
+    return dict(row)
 
 def create_jwt_token(user_id):
     """Creates a 24-hour JWT token for the user."""
     payload = {
-        'sub': user_id, # 'sub' is standard for "subject"
-        'iat': datetime.now(timezone.utc), # 'iat' is "issued at"
-        'exp': datetime.now(timezone.utc) + timedelta(hours=24) # 'exp' is "expiration"
+        'sub': user_id,
+        'iat': datetime.now(timezone.utc),
+        'exp': datetime.now(timezone.utc) + timedelta(hours=24)
     }
     token = jwt.encode(payload, app.config['SECRET_KEY'], algorithm='HS256')
     return token
@@ -81,42 +77,26 @@ def get_user_id_from_token():
 
 @app.route('/api/login')
 def login():
-    """
-    Step 1. Redirects the user to Google's login page.
-    """
     redirect_uri = url_for('auth_callback', _external=True)
-    # --- FIX: Create and save a nonce in the session ---
     session['nonce'] = secrets.token_urlsafe(16)
     return google.authorize_redirect(redirect_uri, nonce=session['nonce'])
 
 @app.route('/auth/callback')
 def auth_callback():
-    """
-    Step 2. Google redirects here after login.
-    """
     try:
-        # Get the user's info from Google
         token = google.authorize_access_token()
-        
-        # --- FIX: Securely parse the id_token using the nonce ---
         nonce = session.pop('nonce', None)
         user_info = google.parse_id_token(token, nonce=nonce)
-        # --- END FIX ---
-        
-        user_id = user_info['email'] # user_id is their email
+        user_id = user_info['email']
 
         if not user_id:
             return redirect(f"{FRONTEND_URL}?error=Login failed")
 
-        # Create the user in our database if they don't exist
         conn = get_db()
         database.get_or_create_user(conn, user_id)
         conn.close()
 
-        # Create our own secure token (JWT)
         app_token = create_jwt_token(user_id)
-
-        # Redirect the user back to the frontend, passing the token in the URL
         return redirect(f"{FRONTEND_URL}?token={app_token}")
 
     except Exception as e:
@@ -124,15 +104,11 @@ def auth_callback():
 
 @app.route('/api/me')
 def get_me():
-    """A protected route to check if a user is logged in."""
     user_id, error = get_user_id_from_token()
-    if error:
-        return error
-    
+    if error: return error
     return jsonify({"user_id": user_id})
 
 # --- 4. SECURE API ENDPOINTS ---
-# (All other endpoints remain the same as the previous version)
 
 @app.route('/api/settings', methods=['GET'])
 def get_settings():
@@ -179,11 +155,18 @@ def get_calendar_data():
         df = engine.get_calendar_data(conn, user_id, start_date, end_date)
         conn.close()
         
+        # --- FIX FOR 500 ERROR ---
+        if df.empty:
+            return jsonify([]) # Return an empty list if no data
+        # --- END FIX ---
+            
         df['date'] = df['date'].dt.strftime('%Y-%m-%d')
         return jsonify(df.to_dict('records'))
         
     except Exception as e:
         return jsonify({"error": f"Error in get_calendar_data: {str(e)}"}), 500
+
+# --- TRANSACTION ENDPOINTS ---
 
 @app.route('/api/transaction/<int:transaction_id>', methods=['GET'])
 def get_transaction(transaction_id):
@@ -192,17 +175,10 @@ def get_transaction(transaction_id):
     
     try:
         conn = get_db()
-        c = conn.cursor()
-        c.execute("SELECT * FROM transactions WHERE transaction_id = ? AND user_id = ?", (transaction_id, user_id))
-        transaction = c.fetchone()
-        
-        if transaction:
-            c.execute("SELECT * FROM transactions WHERE transaction_id = ?", (transaction_id,))
-            serialized_tx = serialize_row(transaction, c)
-            conn.close()
-            return jsonify(serialized_tx)
-        
+        transaction = database.get_transaction(conn, user_id, transaction_id)
         conn.close()
+        if transaction:
+            return jsonify(serialize_row(transaction))
         return jsonify({"error": "Transaction not found"}), 404
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -214,16 +190,9 @@ def get_transactions_for_day(date):
     
     try:
         conn = get_db()
-        c = conn.cursor()
-        c.execute("""
-            SELECT t.*, c.name, c.type 
-            FROM transactions t
-            LEFT JOIN categories c ON t.category_id = c.category_id
-            WHERE t.user_id = ? AND t.date = ?
-        """, (user_id, date))
-        transactions = [serialize_row(row, c) for row in c.fetchall()]
+        transactions = database.get_transactions_for_day(conn, user_id, date)
         conn.close()
-        return jsonify(transactions)
+        return jsonify([serialize_row(tx) for tx in transactions])
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -282,6 +251,8 @@ def delete_transaction(transaction_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# --- SCHEDULE ENDPOINTS ---
+
 @app.route('/api/schedules', methods=['GET'])
 def get_schedules():
     user_id, error = get_user_id_from_token()
@@ -289,16 +260,9 @@ def get_schedules():
     
     try:
         conn = get_db()
-        c = conn.cursor()
-        c.execute("""
-            SELECT s.*, c.name, c.type 
-            FROM scheduled_transactions s
-            LEFT JOIN categories c ON s.category_id = c.category_id
-            WHERE s.user_id = ?
-        """, (user_id,))
-        schedules = [serialize_row(row, c) for row in c.fetchall()]
+        schedules = database.get_scheduled_transactions(conn, user_id)
         conn.close()
-        return jsonify(schedules)
+        return jsonify([serialize_row(s) for s in schedules])
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -338,6 +302,8 @@ def delete_schedule(schedule_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# --- CATEGORY ENDPOINTS ---
+
 @app.route('/api/categories', methods=['GET'])
 def get_categories():
     user_id, error = get_user_id_from_token()
@@ -345,11 +311,9 @@ def get_categories():
     
     try:
         conn = get_db()
-        c = conn.cursor()
-        c.execute("SELECT * FROM categories WHERE user_id = ? ORDER BY name", (user_id,))
-        categories = [serialize_row(row, c) for row in c.fetchall()]
+        categories = database.get_categories(conn, user_id)
         conn.close()
-        return jsonify(categories)
+        return jsonify([serialize_row(c) for c in categories])
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

@@ -7,6 +7,10 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.10.13
+      - key: DATABASE_URL # Gets this from the database service below
+        fromDatabase:
+          name: cash_calendar_db
+          property: connectionString
       - key: GOOGLE_CLIENT_ID
         fromSecret: true
       - key: GOOGLE_CLIENT_SECRET
@@ -14,4 +18,9 @@ services:
       - key: JWT_SECRET_KEY
         fromSecret: true
       - key: FRONTEND_URL
-        value: "http://127.0.0.1:5500" # <-- IMPORTANT: You will change this to your Netlify URL later
+        fromEnv: RENDER_EXTERNAL_URL # Automatically uses your Netlify URL
+
+databases:
+  - name: cash_calendar_db
+    databaseName: cash_calendar_db
+    plan: free

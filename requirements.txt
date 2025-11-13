@@ -7,3 +7,4 @@ pandas
 python-dateutil
 Jinja2
 requests
+psycopg2-binary
