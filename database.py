@@ -4,7 +4,7 @@ import psycopg2
 from psycopg2.extras import DictCursor
 import datetime
 
-# --- DATABASE_URL is NO LONGER read here  ---
+# --- DATABASE_URL is NO LONGER read here ---
 
 def create_connection():
     """Create a database connection to the PostgreSQL database."""
@@ -15,10 +15,10 @@ def create_connection():
             raise ValueError("DATABASE_URL environment variable is not set.")
 
         conn = psycopg2.connect(DATABASE_URL)
-        
+
         # Ensure tables exist every time a connection is made.
         create_tables(conn)
-        
+
     except Exception as e:
         print(f"Error connecting to database: {e}")
     return conn
@@ -91,56 +91,63 @@ def create_tables(conn):
     except Exception as e:
         print(f"Error creating tables: {e}")
 
+# ---
+# --- MODIFIED FUNCTION ---
+# ---
 def get_or_create_user(conn, user_id):
     """
-    Get the user. If they don't exist, create them.
-    **Also ensures their default settings and categories exist.**
+    Get the user. If they don't exist, atomically create them,
+    their default settings, and their default categories.
     """
     try:
         with conn.cursor() as c:
-            # --- Step 1: Check for user ---
+            # --- Step 1: Check if user exists ---
             c.execute("SELECT * FROM users WHERE user_id = %s", (user_id,))
             user = c.fetchone()
+
+            if user:
+                # User already exists, nothing to do.
+                return user_id
+
+            # --- Step 2: User is new. Create user, settings, and categories in ONE transaction ---
+            print(f"Creating new user: {user_id}")
             
-            if user is None:
-                print(f"Creating new user: {user_id}")
-                c.execute("INSERT INTO users (user_id) VALUES (%s)", (user_id,))
-            
-            # --- Step 2: Check for user_settings (FIX FOR 404 ERROR) ---
-            c.execute("SELECT * FROM user_settings WHERE user_id = %s", (user_id,))
-            settings = c.fetchone()
-            
-            if settings is None:
-                print(f"Creating default settings for user: {user_id}")
-                today = datetime.date.today().isoformat()
-                c.execute("""
-                INSERT INTO user_settings (user_id, start_balance, start_date)
-                VALUES (%s, 0.0, %s)
-                """, (user_id, today))
-            
-            # --- Step 3: Check for categories ---
-            c.execute("SELECT * FROM categories WHERE user_id = %s", (user_id,))
-            categories = c.fetchone()
-            
-            if categories is None:
-                print(f"Creating default categories for user: {user_id}")
-                default_categories = [
-                    (user_id, 'Paycheck', 'credit'),
-                    (user_id, 'Rent', 'debit'),
-                    (user_id, 'Groceries', 'debit'),
-                    (user_id, 'Utilities', 'debit'),
-                    (user_id, 'Other', 'debit')
-                ]
-                c.executemany("""
-                INSERT INTO categories (user_id, name, type) VALUES (%s, %s, %s)
-                """, default_categories)
-            
+            # Insert User
+            c.execute("INSERT INTO users (user_id) VALUES (%s)", (user_id,))
+
+            # Insert Default Settings
+            print(f"Creating default settings for user: {user_id}")
+            today = datetime.date.today().isoformat()
+            c.execute("""
+            INSERT INTO user_settings (user_id, start_balance, start_date)
+            VALUES (%s, 0.0, %s)
+            """, (user_id, today))
+
+            # Insert Default Categories
+            print(f"Creating default categories for user: {user_id}")
+            default_categories = [
+                (user_id, 'Paycheck', 'credit'),
+                (user_id, 'Rent', 'debit'),
+                (user_id, 'Groceries', 'debit'),
+                (user_id, 'Utilities', 'debit'),
+                (user_id, 'Other', 'debit')
+            ]
+            c.executemany("""
+            INSERT INTO categories (user_id, name, type) VALUES (%s, %s, %s)
+            """, default_categories)
+
+            # --- Step 3: Commit the entire transaction ---
             conn.commit()
+            print(f"Successfully created and committed new user {user_id}")
             return user_id
+            
     except Exception as e:
         conn.rollback()
-        print(f"Error in get_or_create_user: {e}")
+        print(f"CRITICAL Error in get_or_create_user: {e}. Transaction rolled back.")
         return None
+# ---
+# --- END MODIFIED FUNCTION ---
+# ---
 
 # --- CATEGORY CRUD ---
 
@@ -193,21 +200,21 @@ def delete_transaction(conn, user_id, transaction_id):
     with conn.cursor() as c:
         c.execute("DELETE FROM transactions WHERE transaction_id = %s AND user_id = %s", (transaction_id, user_id))
         conn.commit()
-    
+
 def get_transactions_for_day(conn, user_id, date):
     with conn.cursor(cursor_factory=DictCursor) as c:
         c.execute("""
-            SELECT t.*, c.name, c.type 
+            SELECT t.*, c.name, c.type
             FROM transactions t
             LEFT JOIN categories c ON t.category_id = c.category_id
             WHERE t.user_id = %s AND t.date = %s
         """, (user_id, date))
         return c.fetchall()
-    
+
 def get_all_transactions_after(conn, user_id, date):
     with conn.cursor(cursor_factory=DictCursor) as c:
         c.execute("""
-            SELECT t.*, c.name, c.type 
+            SELECT t.*, c.name, c.type
             FROM transactions t
             LEFT JOIN categories c ON t.category_id = c.category_id
             WHERE t.user_id = %s AND t.date >= %s
@@ -224,11 +231,11 @@ def add_scheduled_transaction(conn, user_id, category_id, description, amount, f
         VALUES (%s, %s, %s, %s, %s, %s, %s)
         """, (user_id, category_id, description, amount, frequency, start_date, end_date))
         conn.commit()
-    
+
 def get_scheduled_transactions(conn, user_id):
     with conn.cursor(cursor_factory=DictCursor) as c:
         c.execute("""
-            SELECT s.*, c.name, c.type 
+            SELECT s.*, c.name, c.type
             FROM scheduled_transactions s
             LEFT JOIN categories c ON s.category_id = c.category_id
             WHERE s.user_id = %s
@@ -238,14 +245,14 @@ def get_scheduled_transactions(conn, user_id):
 def delete_scheduled_transaction(conn, user_id, schedule_id, delete_future=False):
     with conn.cursor() as c:
         c.execute("DELETE FROM scheduled_transactions WHERE schedule_id = %s AND user_id = %s", (schedule_id, user_id))
-        
+
         if delete_future:
             c.execute("""
             DELETE FROM transactions
             WHERE schedule_id = %s AND user_id = %s AND is_confirmed = 0
             """, (schedule_id, user_id))
         conn.commit()
-    
+
 def get_last_generated_date(conn, user_id, schedule_id):
     with conn.cursor() as c:
         c.execute("""
