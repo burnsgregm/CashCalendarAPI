@@ -31,7 +31,7 @@ This API is designed to be deployed to **Render**. The frontend is in a separate
 ## Deployment to Render
 
 This repository is "Render-ready."
-
+ 
 1.  Create a new "Web Service" on Render and connect this GitHub repository.
 2.  Render will auto-detect the `render.yaml` file.
 3.  Set the "Root Directory" to `./` (or leave blank).

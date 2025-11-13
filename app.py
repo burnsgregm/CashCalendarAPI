@@ -1,5 +1,6 @@
 
 import os
+import sqlite3
 import pandas as pd
 from flask import Flask, jsonify, request, redirect, url_for, session
 from flask_cors import CORS
@@ -33,9 +34,25 @@ google = oauth.register(
     client_kwargs={'scope': 'openid email profile'}
 )
 
+# --- 3. DATABASE INITIALIZATION (*** THIS IS THE FIX ***) ---
+
+@app.before_first_request
+def initialize_app():
+    """
+    Run once when the first request comes in.
+    This will create the tables on the new Render instance.
+    """
+    try:
+        print("Initializing database tables (before first request)...")
+        conn = database.initialize_database()
+        conn.close()
+        print("Database initialization complete.")
+    except Exception as e:
+        print(f"Error during startup database initialization: {e}")
+
 def get_db():
     """Helper to get a fresh db connection."""
-    return database.initialize_database()
+    return database.create_connection() # Use create_connection, not initialize
 
 def serialize_row(row):
     """Converts a Psycopg DictRow into a plain dict."""
@@ -73,7 +90,7 @@ def get_user_id_from_token():
     except Exception as e:
         return None, (jsonify({"error": f"Invalid token: {str(e)}"}), 401)
 
-# --- 3. AUTHENTICATION API ENDPOINTS ---
+# --- 4. AUTHENTICATION API ENDPOINTS ---
 
 @app.route('/api/login')
 def login():
@@ -108,7 +125,8 @@ def get_me():
     if error: return error
     return jsonify({"user_id": user_id})
 
-# --- 4. SECURE API ENDPOINTS ---
+# --- 5. SECURE API ENDPOINTS ---
+# (All endpoints below are unchanged)
 
 @app.route('/api/settings', methods=['GET'])
 def get_settings():
@@ -155,10 +173,8 @@ def get_calendar_data():
         df = engine.get_calendar_data(conn, user_id, start_date, end_date)
         conn.close()
         
-        # --- FIX FOR 500 ERROR ---
         if df.empty:
             return jsonify([]) # Return an empty list if no data
-        # --- END FIX ---
             
         df['date'] = df['date'].dt.strftime('%Y-%m-%d')
         return jsonify(df.to_dict('records'))
@@ -358,16 +374,11 @@ def delete_category(category_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# --- 5. RUN THE APP ---
+# --- 6. RUN THE APP ---
 if __name__ == '__main__':
-    try:
-        print("Initializing database...")
-        conn = database.initialize_database()
-        conn.close()
-        print("Initialization complete.")
-    except Exception as e:
-        print(f"Error during startup: {e}")
-
+    # Manually initialize for local dev
+    initialize_app() 
+    
     print("\n" + "="*50)
     print("🚀 Flask server is starting for LOCAL DEVELOPMENT...")
     print(f"Your frontend should be running at: {FRONTEND_URL}")
