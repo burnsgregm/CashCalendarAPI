@@ -15,7 +15,27 @@ import engine
 # --- 1. APP & DB INITIALIZATION ---
 app = Flask(__name__)
 
-# --- Load Config from Environment Variables ---
+# --- 2. DATABASE INITIALIZATION (*** THIS IS THE FIX ***) ---
+def init_db():
+    """
+    Run once when the app starts.
+    This will create the tables on the Render instance.
+    """
+    try:
+        print("Initializing database tables...")
+        conn = database.initialize_database()
+        conn.close()
+        print("Database initialization complete.")
+    except Exception as e:
+        print(f"Error during startup database initialization: {e}")
+
+init_db() # <-- This call will run ONCE when Gunicorn starts the app.
+# --- END FIX ---
+
+
+# --- 3. CONFIGURATION & HELPERS ---
+
+# Load Config from Environment Variables
 app.config['SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY')
 app.config['GOOGLE_CLIENT_ID'] = os.environ.get('GOOGLE_CLIENT_ID')
 app.config['GOOGLE_CLIENT_SECRET'] = os.environ.get('GOOGLE_CLIENT_SECRET')
@@ -24,7 +44,7 @@ FRONTEND_URL = os.environ.get('FRONTEND_URL') # Set by Render
 # Enable CORS
 CORS(app, resources={r"/api/*": {"origins": [FRONTEND_URL]}})
 
-# --- 2. AUTHENTICATION SETUP (GOOGLE OAUTH & JWT) ---
+# --- 4. AUTHENTICATION SETUP (GOOGLE OAUTH & JWT) ---
 oauth = OAuth(app)
 google = oauth.register(
     name='google',
@@ -33,22 +53,6 @@ google = oauth.register(
     server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
     client_kwargs={'scope': 'openid email profile'}
 )
-
-# --- 3. DATABASE INITIALIZATION (*** THIS IS THE FIX ***) ---
-
-@app.before_first_request
-def initialize_app():
-    """
-    Run once when the first request comes in.
-    This will create the tables on the new Render instance.
-    """
-    try:
-        print("Initializing database tables (before first request)...")
-        conn = database.initialize_database()
-        conn.close()
-        print("Database initialization complete.")
-    except Exception as e:
-        print(f"Error during startup database initialization: {e}")
 
 def get_db():
     """Helper to get a fresh db connection."""
@@ -90,7 +94,7 @@ def get_user_id_from_token():
     except Exception as e:
         return None, (jsonify({"error": f"Invalid token: {str(e)}"}), 401)
 
-# --- 4. AUTHENTICATION API ENDPOINTS ---
+# --- 5. AUTHENTICATION API ENDPOINTS ---
 
 @app.route('/api/login')
 def login():
@@ -125,7 +129,7 @@ def get_me():
     if error: return error
     return jsonify({"user_id": user_id})
 
-# --- 5. SECURE API ENDPOINTS ---
+# --- 6. SECURE API ENDPOINTS ---
 # (All endpoints below are unchanged)
 
 @app.route('/api/settings', methods=['GET'])
@@ -374,10 +378,10 @@ def delete_category(category_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# --- 6. RUN THE APP ---
+# --- 7. RUN THE APP ---
 if __name__ == '__main__':
     # Manually initialize for local dev
-    initialize_app() 
+    # init_db() is already called at the top
     
     print("\n" + "="*50)
     print("🚀 Flask server is starting for LOCAL DEVELOPMENT...")
