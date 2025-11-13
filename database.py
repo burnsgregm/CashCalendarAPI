@@ -4,7 +4,7 @@ import psycopg2
 from psycopg2.extras import DictCursor
 import datetime
 
-# --- DATABASE_URL is NO LONGER read here ---
+# --- DATABASE_URL is NO LONGER read here  ---
 
 def create_connection():
     """Create a database connection to the PostgreSQL database."""
@@ -91,63 +91,56 @@ def create_tables(conn):
     except Exception as e:
         print(f"Error creating tables: {e}")
 
-# ---
-# --- MODIFIED FUNCTION ---
-# ---
 def get_or_create_user(conn, user_id):
     """
-    Get the user. If they don't exist, atomically create them,
-    their default settings, and their default categories.
+    Get the user. If they don't exist, create them.
+    **Also ensures their default settings and categories exist.**
     """
     try:
         with conn.cursor() as c:
-            # --- Step 1: Check if user exists ---
+            # --- Step 1: Check for user ---
             c.execute("SELECT * FROM users WHERE user_id = %s", (user_id,))
             user = c.fetchone()
 
-            if user:
-                # User already exists, nothing to do.
-                return user_id
+            if user is None:
+                print(f"Creating new user: {user_id}")
+                c.execute("INSERT INTO users (user_id) VALUES (%s)", (user_id,))
 
-            # --- Step 2: User is new. Create user, settings, and categories in ONE transaction ---
-            print(f"Creating new user: {user_id}")
-            
-            # Insert User
-            c.execute("INSERT INTO users (user_id) VALUES (%s)", (user_id,))
+            # --- Step 2: Check for user_settings (FIX FOR 404 ERROR) ---
+            c.execute("SELECT * FROM user_settings WHERE user_id = %s", (user_id,))
+            settings = c.fetchone()
 
-            # Insert Default Settings
-            print(f"Creating default settings for user: {user_id}")
-            today = datetime.date.today().isoformat()
-            c.execute("""
-            INSERT INTO user_settings (user_id, start_balance, start_date)
-            VALUES (%s, 0.0, %s)
-            """, (user_id, today))
+            if settings is None:
+                print(f"Creating default settings for user: {user_id}")
+                today = datetime.date.today().isoformat()
+                c.execute("""
+                INSERT INTO user_settings (user_id, start_balance, start_date)
+                VALUES (%s, 0.0, %s)
+                """, (user_id, today))
 
-            # Insert Default Categories
-            print(f"Creating default categories for user: {user_id}")
-            default_categories = [
-                (user_id, 'Paycheck', 'credit'),
-                (user_id, 'Rent', 'debit'),
-                (user_id, 'Groceries', 'debit'),
-                (user_id, 'Utilities', 'debit'),
-                (user_id, 'Other', 'debit')
-            ]
-            c.executemany("""
-            INSERT INTO categories (user_id, name, type) VALUES (%s, %s, %s)
-            """, default_categories)
+            # --- Step 3: Check for categories ---
+            c.execute("SELECT * FROM categories WHERE user_id = %s", (user_id,))
+            categories = c.fetchone()
 
-            # --- Step 3: Commit the entire transaction ---
+            if categories is None:
+                print(f"Creating default categories for user: {user_id}")
+                default_categories = [
+                    (user_id, 'Paycheck', 'credit'),
+                    (user_id, 'Rent', 'debit'),
+                    (user_id, 'Groceries', 'debit'),
+                    (user_id, 'Utilities', 'debit'),
+                    (user_id, 'Other', 'debit')
+                ]
+                c.executemany("""
+                INSERT INTO categories (user_id, name, type) VALUES (%s, %s, %s)
+                """, default_categories)
+
             conn.commit()
-            print(f"Successfully created and committed new user {user_id}")
             return user_id
-            
     except Exception as e:
         conn.rollback()
-        print(f"CRITICAL Error in get_or_create_user: {e}. Transaction rolled back.")
+        print(f"Error in get_or_create_user: {e}")
         return None
-# ---
-# --- END MODIFIED FUNCTION ---
-# ---
 
 # --- CATEGORY CRUD ---
 
