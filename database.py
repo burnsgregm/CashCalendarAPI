@@ -4,12 +4,20 @@ import psycopg2
 from psycopg2.extras import DictCursor
 import datetime
 
-DATABASE_URL = os.environ.get('DATABASE_URL')
+# --- DATABASE_URL is NO LONGER read here ---
 
 def create_connection():
     """Create a database connection to the PostgreSQL database."""
     conn = None
     try:
+        # --- THIS IS THE FIX ---
+        # Read the DATABASE_URL from the environment *inside* the function,
+        # not at the top of the file.
+        DATABASE_URL = os.environ.get('DATABASE_URL')
+        if not DATABASE_URL:
+            raise ValueError("DATABASE_URL environment variable is not set.")
+        # --- END FIX ---
+
         conn = psycopg2.connect(DATABASE_URL)
         conn.autocommit = True
     except Exception as e:
