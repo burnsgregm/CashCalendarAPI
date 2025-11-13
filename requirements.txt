@@ -6,3 +6,4 @@ gunicorn
 pandas
 python-dateutil
 Jinja2
+requests
