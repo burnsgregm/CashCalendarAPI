@@ -1,0 +1,11 @@
+# Ignore the SQLite database
+finance_db.sqlite
+finance_db.sqlite-journal
+
+# Ignore Python cache files
+__pycache__/
+*.pyc
+
+# Ignore environment files
+.env
+*.env
