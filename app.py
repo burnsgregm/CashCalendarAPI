@@ -11,7 +11,7 @@ import secrets
 import database
 import engine
 
-# --- 1. APP & DB INITIALIZATION ---
+# --- 1. APP & DB INITIALIZATION  ---
 app = Flask(__name__)
 
 # --- 2. CONFIGURATION & HELPERS ---
