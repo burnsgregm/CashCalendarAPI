@@ -1,6 +1,5 @@
 
 import os
-import sqlite3
 import pandas as pd
 from flask import Flask, jsonify, request, redirect, url_for, session
 from flask_cors import CORS
@@ -15,25 +14,7 @@ import engine
 # --- 1. APP & DB INITIALIZATION ---
 app = Flask(__name__)
 
-# --- 2. DATABASE INITIALIZATION (*** THIS IS THE FIX ***) ---
-def init_db():
-    """
-    Run once when the app starts.
-    This will create the tables on the Render instance.
-    """
-    try:
-        print("Initializing database tables...")
-        conn = database.initialize_database()
-        conn.close()
-        print("Database initialization complete.")
-    except Exception as e:
-        print(f"Error during startup database initialization: {e}")
-
-init_db() # <-- This call will run ONCE when Gunicorn starts the app.
-# --- END FIX ---
-
-
-# --- 3. CONFIGURATION & HELPERS ---
+# --- 2. CONFIGURATION & HELPERS ---
 
 # Load Config from Environment Variables
 app.config['SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY')
@@ -44,7 +25,7 @@ FRONTEND_URL = os.environ.get('FRONTEND_URL') # Set by Render
 # Enable CORS
 CORS(app, resources={r"/api/*": {"origins": [FRONTEND_URL]}})
 
-# --- 4. AUTHENTICATION SETUP (GOOGLE OAUTH & JWT) ---
+# --- 3. AUTHENTICATION SETUP (GOOGLE OAUTH & JWT) ---
 oauth = OAuth(app)
 google = oauth.register(
     name='google',
@@ -56,7 +37,8 @@ google = oauth.register(
 
 def get_db():
     """Helper to get a fresh db connection."""
-    return database.create_connection() # Use create_connection, not initialize
+    # This now calls our "smart" connection function
+    return database.create_connection() 
 
 def serialize_row(row):
     """Converts a Psycopg DictRow into a plain dict."""
@@ -94,7 +76,7 @@ def get_user_id_from_token():
     except Exception as e:
         return None, (jsonify({"error": f"Invalid token: {str(e)}"}), 401)
 
-# --- 5. AUTHENTICATION API ENDPOINTS ---
+# --- 4. AUTHENTICATION API ENDPOINTS ---
 
 @app.route('/api/login')
 def login():
@@ -129,7 +111,7 @@ def get_me():
     if error: return error
     return jsonify({"user_id": user_id})
 
-# --- 6. SECURE API ENDPOINTS ---
+# --- 5. SECURE API ENDPOINTS ---
 # (All endpoints below are unchanged)
 
 @app.route('/api/settings', methods=['GET'])
@@ -186,7 +168,7 @@ def get_calendar_data():
     except Exception as e:
         return jsonify({"error": f"Error in get_calendar_data: {str(e)}"}), 500
 
-# --- TRANSACTION ENDPOINTS  ---
+# --- TRANSACTION ENDPOINTS ---
 
 @app.route('/api/transaction/<int:transaction_id>', methods=['GET'])
 def get_transaction(transaction_id):
@@ -380,9 +362,6 @@ def delete_category(category_id):
 
 # --- 7. RUN THE APP ---
 if __name__ == '__main__':
-    # Manually initialize for local dev
-    # init_db() is already called at the top
-    
     print("\n" + "="*50)
     print("🚀 Flask server is starting for LOCAL DEVELOPMENT...")
     print(f"Your frontend should be running at: {FRONTEND_URL}")

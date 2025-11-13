@@ -4,8 +4,13 @@ import psycopg2
 from psycopg2.extras import DictCursor
 import datetime
 
+# --- DATABASE_URL is NO LONGER read here ---
+
 def create_connection():
-    """Create a database connection to the PostgreSQL database."""
+    """
+    Create a database connection to the PostgreSQL database.
+    Also ensures tables are created.
+    """
     conn = None
     try:
         # --- THIS IS THE FIX ---
@@ -18,6 +23,12 @@ def create_connection():
 
         conn = psycopg2.connect(DATABASE_URL)
         conn.autocommit = True
+        
+        # --- LAZY INITIALIZATION ---
+        # Ensure tables exist every time a connection is made.
+        # This is idempotent (safe to run multiple times).
+        create_tables(conn)
+        
     except Exception as e:
         print(f"Error connecting to database: {e}")
     return conn
@@ -129,16 +140,6 @@ def get_or_create_user(conn, user_id):
     except Exception as e:
         print(f"Error in get_or_create_user: {e}")
         return None
-
-# --- Wrapper Function ---
-def initialize_database():
-    """Initializes and returns a database connection."""
-    conn = create_connection()
-    if conn is not None:
-        create_tables(conn)
-        return conn
-    else:
-        raise Exception("Error! Cannot create the database connection.")
 
 # --- CATEGORY CRUD ---
 
