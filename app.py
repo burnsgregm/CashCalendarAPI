@@ -85,8 +85,6 @@ def login():
     session['nonce'] = secrets.token_urlsafe(16)
     return google.authorize_redirect(redirect_uri, nonce=session['nonce'])
 
-# In /CashCalendarAPI/app.py
-
 @app.route('/auth/callback')
 def auth_callback():
     try:
@@ -99,7 +97,6 @@ def auth_callback():
             return redirect(f"{FRONTEND_URL}?error=Login failed, no email found.")
 
         conn = get_db()
-        # --- MODIFICATION ---
         # Check the return value. If it's None, creation failed.
         db_user_id = database.get_or_create_user(conn, user_id)
         conn.close()
@@ -108,7 +105,6 @@ def auth_callback():
             # The database function failed and rolled back. Do not issue a token.
             print(f"Database account creation failed for {user_id}.")
             return redirect(f"{FRONTEND_URL}?error=Database account creation failed.")
-        # --- END MODIFICATION ---
 
         app_token = create_jwt_token(db_user_id) # Use db_user_id
         return redirect(f"{FRONTEND_URL}?token={app_token}")
@@ -155,27 +151,30 @@ def update_settings():
 def get_calendar_data():
     user_id, error = get_user_id_from_token()
     if error: return error
-    
+
     start_date = request.args.get('start')
     end_date = request.args.get('end')
-    
+
     if not start_date or not end_date:
         return jsonify({"error": "start and end parameters are required"}), 400
-        
+
     try:
         conn = get_db()
-        projection_end_date = (datetime.strptime(end_date, "%Y-%m-%d") + relativedelta(years=2)).isoformat()
-        engine.run_projection(conn, user_id, projection_end_date)
         
+        # We add .date() before .isoformat() to get "YYYY-MM-DD"
+        projection_end_date = (datetime.strptime(end_date, "%Y-%m-%d") + relativedelta(years=2)).date().isoformat()
+        
+        engine.run_projection(conn, user_id, projection_end_date)
+
         df = engine.get_calendar_data(conn, user_id, start_date, end_date)
         conn.close()
-        
+
         if df.empty:
             return jsonify([]) # Return an empty list if no data
-            
+
         df['date'] = df['date'].dt.strftime('%Y-%m-%d')
         return jsonify(df.to_dict('records'))
-        
+
     except Exception as e:
         return jsonify({"error": f"Error in get_calendar_data: {str(e)}"}), 500
 
